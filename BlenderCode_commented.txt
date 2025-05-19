@@ -1,0 +1,1138 @@
+# Imports necessary Blender and math modules
+import bpy
+import math
+import numpy as np
+import mathutils
+
+# Cleanup materials except those in the 'keep' list to avoid clutter and conflicts
+keep = {"tank", "struct", "mainRob", "handle","grSCREW","grMOTORPOOL", "grHOOK", "grLINK", "grBASE", "floor", "elevator", "DrGrip", "drawer", "detailRob", "cyl", "black1Rob", "black2Rob"}
+for mat in bpy.data.materials:
+    if mat.name not in keep:
+        bpy.data.materials.remove(mat)
+
+# Create a cube with specified size, location, material and name
+def create_box(size, location, color, name):
+    locx, locy, locz = location[0], location[1], location[2]
+    vx, vy, vz = size[0], size[1], size[2]
+    
+    # Add cube primitive at location with default size=1
+    bpy.ops.mesh.primitive_cube_add(size=1, location=(locx, locy, locz))
+    obj = bpy.context.object
+    
+    # Scale cube to desired dimensions
+    obj.scale.x = vx
+    obj.scale.y = vy
+    obj.scale.z = vz
+    
+    obj.name = name
+    
+    # Assign material named "drawer" to the object
+    drawer = bpy.data.materials.get("drawer")
+    obj.data.materials.append(drawer)
+
+# Create an array of cylinders and a handle at the specified location
+def create_cyl_array(location, color, name, box_dim):
+    locx, locy, locz = location[0], location[1] - 3.9, location[2] + 0.65
+    length, radius = 6.3, 1.2 / 2
+    
+    # Create 6 cylinders aligned along the y-axis
+    for i in range(6):
+        bpy.ops.mesh.primitive_cylinder_add(radius=radius, depth=length, location=(locx, locy + i * 1.56, locz))
+        obj = bpy.context.object
+        obj.name = name
+        obj.rotation_euler[1] = -math.pi / 2  # Rotate cylinders to horizontal orientation
+        
+        cyl = bpy.data.materials.get("cyl")
+        obj.data.materials.append(cyl)
+    
+    # Create a handle cylinder perpendicular to the pipe array
+    dx, dy, dz = box_dim[0], box_dim[1], box_dim[2]
+    dia = 0.5 * dz
+    corr_y = 2.2 * radius
+    corr_z = 1.5 * radius
+    
+    bpy.ops.mesh.primitive_cylinder_add(radius=dia, depth=dx, location=(locx, locy - corr_y, locz - corr_z))
+    obj = bpy.context.object
+    obj.name = name
+    obj.rotation_euler[1] = -math.pi / 2
+    
+    handle = bpy.data.materials.get("handle")
+    obj.data.materials.append(handle)
+
+# Create a structured grid of boxes or cylinders based on parameters
+def create_struct(struct_dim, box_dim, spacing, start_loc, type, struct_type, section):
+    x_strucs, y_strucs, z_strucs = struct_dim[0], struct_dim[1], struct_dim[2]
+    x_box, y_box, z_box = box_dim[0], box_dim[1], box_dim[2]
+    x_spacing, y_spacing, z_spacing = spacing[0], spacing[1], spacing[2]
+    x_start, y_start, z_start = start_loc[0], start_loc[1], start_loc[2]
+    
+    x_coord, y_coord, z_coord = x_start, y_start, z_start
+    x_count, y_count, z_count = 0, 0, 0
+    
+    # Triple nested loop to cover the 3D grid of structures
+    for _ in range(z_strucs):
+        for _ in range(x_strucs):
+            for _ in range(y_strucs):
+                # Determine object name convention based on type
+                if type[0:5] == "skuff":  # drawer
+                    name = section + "Dr" + str(x_count) + str(y_count) + str(z_count)
+                if type[0:6] == "strukt" and struct_type == "enkeltvis":  # single structures
+                    name = section + "Str" + str(x_count) + str(y_count)
+                if type[0:6] == "strukt" and struct_type == "reolvis_X":  # rack structures along X
+                    name = section + "RACK" + str(y_count)
+                if type == "cyl":  # cylinders
+                    name = section + "Dr" + str(x_count) + str(y_count) + str(z_count)
+                    create_cyl_array(location=(x_coord, y_coord, z_coord), color=(1,1,1), name=name, box_dim=box_dim)
+                
+                # Create box unless the object was already created as a cylinder
+                if type != "cyl":    
+                    create_box(size=(x_box, y_box, z_box), location=(x_coord, y_coord, z_coord), color=(1,1,1), name=name)
+                
+                y_coord += y_spacing + y_box
+                y_count += 1
+            
+            y_coord = y_start
+            x_coord += x_spacing + x_box
+            y_count = 0
+            x_count += 1
+        
+        x_coord = x_start
+        z_coord += z_spacing + z_box
+        x_count = 0
+        z_count += 1
+
+# Create drawers with detailed components: bottom, cylinders, walls, structure, rails, and support elements
+def create_drawers(struct_dim, box_dim, spacing, start_loc, Wthickness, Pthickness, Pspacing, section):
+    dx, dy, dz = box_dim[0], box_dim[1], box_dim[2]
+    sx, sy, sz = spacing[0], spacing[1], spacing[2]
+    cx, cy, cz = start_loc[0], start_loc[1], start_loc[2]
+    Tb, TwA, TwB = Wthickness[0], Wthickness[1], Wthickness[2]
+    Tpx, Tpy, Tpz = Pthickness[0], Pthickness[1], Pthickness[2]
+    sDBtoP, sDStoP = Pspacing[0], Pspacing[1]
+    nx, ny, nz = struct_dim[0], struct_dim[1], struct_dim[2]
+    
+    # Adjust spacing and name based on spacing in X-direction (density constraints due to braces)
+    if sx == 0:
+        name = "reolvis_X"  # rack style
+    else:
+        name = "enkeltvis"  # single style
+    sx = sx + 2 * sDStoP + Tpx
+    sz = sz + 2 * sDBtoP    
+    
+    # Drawers components:
+    # Bottom panel
+    create_struct(struct_dim, box_dim=(dx, dy, Tb), spacing=(sx, sy, sz + dz - Tb), start_loc=(cx, cy, cz + (Tb - dz) / 2), type="skuffebunn", struct_type="", section=section)
+    
+    # Cylinders inside drawers + handles
+    create_struct(struct_dim, box_dim=(dx, dy, Tb), spacing=(sx, sy, sz + dz - Tb), start_loc=(cx, cy, cz + (Tb - dz) / 2), type="cyl", struct_type="", section=section)
+    
+    # Side walls (short edges along x)
+    create_struct(struct_dim, box_dim=(dx, TwA, dz), spacing=(sx, sy + dy - TwA, sz), start_loc=(cx, cy + (TwA - dy) / 2, cz), type="skuffevegg_X1", struct_type="", section=section)
+    create_struct(struct_dim, box_dim=(dx, TwA, dz), spacing=(sx, sy + dy - TwA, sz), start_loc=(cx, cy - (TwA - dy) / 2, cz), type="skuffevegg_X2", struct_type="", section=section)
+    
+    # Side walls (long edges along y)
+    create_struct(struct_dim, box_dim=(TwB, dy, dz), spacing=(sx + dx - TwB, sy, sz), start_loc=(cx + (TwB - dx) / 2, cy, cz), type="skuffevegg_Y1", struct_type="", section=section)
+    create_struct(struct_dim, box_dim=(TwB, dy, dz), spacing=(sx + dx - TwB, sy, sz), start_loc=(cx - (TwB - dx) / 2, cy, cz), type="skuffevegg_Y2", struct_type="", section=section)
+    
+    # Structural braces:
+    # Horizontal braces (red cross beams)
+    create_struct(struct_dim, box_dim=(dx + sDStoP * 2, Tpy, Tpz), spacing=(sx - 2 * sDStoP, sy + dy - Tpy, sz + dz - Tpz), start_loc=(cx, cy + (Tpy - dy) / 2, cz - (dz + Tpz) / 2 - sDBtoP), type="strukt_stag_X1", struct_type=name, section=section)
+    create_struct(struct_dim, box_dim=(dx + sDStoP * 2, Tpy, Tpz), spacing=(sx - 2 * sDStoP, sy + dy - Tpy, sz + dz - Tpz), start_loc=(cx, cy - (Tpy - dy) / 2, cz - (dz + Tpz) / 2 - sDBtoP), type="strukt_stag_X2", struct_type=name, section=section)
+    
+    # Vertical braces
+    create_struct(struct_dim=(nx,ny,1),box_dim=(Tpx,Tpy,nz*(dz+sz+sDBtoP/2)-sz+dz),spacing=(sx+dx-Tpx,sy+dy-Tpy,0),start_loc=(cx+(dx+Tpx)/2+sDStoP,cy+(Tpy-dy)/2,cz+(nz*dz+(nz-1)*sz)/2-dz-sDBtoP/2), type="strukt_stag_Z1", struct_type=name, section=section)
+    create_struct(struct_dim=(nx,ny,1),box_dim=(Tpx,Tpy,nz*(dz+sz+sDBtoP/2)-sz+dz),spacing=(sx+dx-Tpx,sy+dy-Tpy,0),start_loc=(cx+(dx+Tpx)/2+sDStoP,cy-(Tpy-dy)/2,cz+(nz*dz+(nz-1)*sz)/2-dz-sDBtoP/2), type="strukt_stag_Z2", struct_type=name, section=section)
+    create_struct(struct_dim=(nx,ny,1),box_dim=(Tpx,Tpy,nz*(dz+sz+sDBtoP/2)-sz+dz),spacing=(sx+dx-Tpx,sy+dy-Tpy,0),start_loc=(cx-(dx+Tpx)/2-sDStoP,cy+(Tpy-dy)/2,cz+(nz*dz+(nz-1)*sz)/2-dz-sDBtoP/2), type="strukt_stag_Z3", struct_type=name, section=section)
+    create_struct(struct_dim=(nx,ny,1),box_dim=(Tpx,Tpy,nz*(dz+sz+sDBtoP/2)-sz+dz),spacing=(sx+dx-Tpx,sy+dy-Tpy,0),start_loc=(cx-(dx+Tpx)/2-sDStoP,cy-(Tpy-dy)/2,cz+(nz*dz+(nz-1)*sz)/2-dz-sDBtoP/2), type="strukt_stag_Z4", struct_type=name, section=section)
+    
+    # Outer rails
+    create_struct(struct_dim,box_dim=(TwB,dy,sDBtoP),spacing=(sx+dx-TwB,sy,sz+dz-sDBtoP),start_loc=(cx+(TwB-dx)/2,cy,cz-(dz+sDBtoP)/2), type="strukt_skinne_Y1", struct_type=name, section=section)
+    create_struct(struct_dim,box_dim=(TwB,dy,sDBtoP),spacing=(sx+dx-TwB,sy,sz+dz-sDBtoP),start_loc=(cx-(TwB-dx)/2,cy,cz-(dz+sDBtoP)/2), type="strukt_skinne_Y2", struct_type=name, section=section)
+    
+    # Inner rails 
+    ext = 25
+    fac = dy/ext
+    create_struct(struct_dim,box_dim=(TwB,dy+fac,sDBtoP),spacing=(sx+dx-TwB,sy-fac,sz+dz-sDBtoP),start_loc=(cx+(TwB-dx)/2+TwB,cy-fac/2,cz-(dz+sDBtoP)/2), type="skuffeskinne", struct_type=name, section=section)
+    create_struct(struct_dim,box_dim=(TwB,dy+fac,sDBtoP),spacing=(sx+dx-TwB,sy-fac,sz+dz-sDBtoP),start_loc=(cx-(TwB-dx)/2-TwB,cy-fac/2,cz-(dz+sDBtoP)/2), type="skuffeskinne", struct_type=name, section=section)
+    
+    
+    # Object sorting in list form
+    bpy.ops.object.select_all(action='DESELECT')
+    objects_by_name = {}
+    for obj in bpy.context.scene.objects:
+        if obj.type == 'MESH':  # only mesh type objects
+            objects_by_name.setdefault(obj.name[0:6], []).append(obj)
+    
+    # Joining objects that should be the same
+    for name, objects in objects_by_name.items():
+        bpy.context.view_layer.objects.active = objects[0]
+        for obj in objects:
+            if obj.name[0:2] == section+"D" or obj.name[0:5] == section+"RACK":
+                obj.select_set(True)
+
+        bpy.ops.object.join()
+        bpy.context.view_layer.objects.active = None
+        bpy.ops.object.select_all(action='DESELECT')
+
+def printHandlers(): # Prints background commands running in blender
+    print("")
+    print("ACTIVE HANDLERS:")
+    if not bpy.app.handlers.frame_change_post: # Prints empty if no handlers
+        print("TOM")
+    else:
+        i = 0
+        for handler in bpy.app.handlers.frame_change_post:
+            i += 1
+            print(f"{i}. {handler.__name__}")
+   
+def delKeyframes(object, frames): # Deletes keyframes for given objects between given frames
+    objs = []
+    
+    if object == "all": 
+        objs = [obj.name for obj in bpy.context.scene.objects] # Deletes keyframes for all objects
+    else:
+        objs = object
+        
+    for i in range(len(objs)):
+        obj = bpy.data.objects.get(objs[i])
+        if obj.animation_data and obj.animation_data.action:
+            action = obj.animation_data.action
+            for fcurve in action.fcurves:
+                keyframe_points = fcurve.keyframe_points
+                keyframes_to_remove = [i for i, kp in enumerate(keyframe_points) if frames[0] <= kp.co.x <= frames[-1]]
+
+                for i in reversed(keyframes_to_remove):
+                    keyframe_points.remove(keyframe_points[i])
+
+def MOVE(name, locations, frames, rotations=None, ik_rot = False):
+    # Retrieve Blender object by name
+    obj = bpy.data.objects.get(name)
+
+    # Exit if object not found
+    if obj is None:
+        print(f"Objekt '{name}' ikke funnet!")
+        return
+    
+    # Special handling for object named 'tank'
+    # Convert positions to movement only along local Y axis and rotations about Z only
+    if name == "tank":
+        loc_list = [locations[0]]
+        if rotations:
+            rot_list = [(0,0,rotations[0])]
+        
+        # For subsequent locations, zero X and Z, keep Y only
+        for i in range(len(locations) -1):
+            point = (0,locations[i+1],0)
+            loc_list.append(point)
+            if rotations:
+                rot = (0,0,rotations[i+1])
+                rot_list.append(rot)
+        
+        locations = loc_list
+        if rotations:
+            rotations = rot_list
+    
+    # Special handling for 'elevate' object: 
+    # Positions are mapped to fixed X=5.5 and Y=-3 with Z from input,
+    # with a default offset of 7.6 if position is zero
+    if name == "elevate":
+        if locations[0] == 0:
+            locations[0] = 7.6
+        loc_list = [(5.5,-3,locations[0])]
+        rotations = None  # no rotation keyframes for elevate
+        for i in range(len(locations) -1):
+            if locations[i+1] == 0:
+                locations[i+1] = 7.6
+            point = (5.5,-3,locations[i+1])
+            loc_list.append(point)
+        
+        locations = loc_list
+        
+    # Special case for 'ARM_END1' object - IK constraint rotation toggle
+    if name == "ARM_END1":
+        if rotations:
+            # If first rotation is 'current', replace with object's current Euler rotation in degrees
+            if rotations[0] == "current":
+                rotations[0] = (obj.rotation_euler.x*180/math.pi,obj.rotation_euler.y*180/math.pi,obj.rotation_euler.z*180/math.pi)
+        # Select arm object and bone to modify IK constraint rotation influence
+        bpy.context.view_layer.objects.active = bpy.data.objects["Denso_arm1"]
+        bpy.data.objects["Denso_arm1"].select_set(True)
+        bone = bpy.context.object.pose.bones["Bone.008"]
+        ik_constraint = bone.constraints["IK"]
+        frame_start = frames[0]
+        frame_end = frames[-1]
+        # Set scene to start frame and insert keyframe for IK rotation enable/disable
+        if ik_rot == True:
+            bpy.context.scene.frame_set(frame_start)
+            ik_constraint.use_rotation = True
+            ik_constraint.keyframe_insert(data_path="use_rotation")
+        else:
+            ik_constraint.use_rotation = False
+            ik_constraint.keyframe_insert(data_path="use_rotation")
+
+        bpy.data.objects["Denso_arm1"].select_set(False)
+         
+    # --- APPLY MOTION ---
+
+    # Set initial location keyframe
+    obj.location = locations[0]
+    obj.keyframe_insert("location", frame=frames[0])
+    
+    # Set initial rotation keyframe if rotations are provided
+    if rotations:
+        obj.rotation_euler.x = rotations[0][0] * math.pi / 180
+        obj.rotation_euler.y = rotations[0][1] * math.pi / 180
+        obj.rotation_euler.z = rotations[0][2] * math.pi / 180
+        obj.keyframe_insert("rotation_euler", frame=frames[0])
+        del rotations[0]  # Remove first rotation after applying
+    del locations[0]  # Remove first location after applying
+    del frames[0]     # Remove first frame after applying
+        
+    # Loop through remaining locations to apply animation keyframes
+    for i in range(len(locations)):
+        # For 'tank', apply movement in local coordinate system using matrix_basis
+        if name == "tank": # or name == "ARM_END":
+            local_translation = mathutils.Vector(locations[i])
+            obj.location = obj.matrix_basis @ local_translation
+        else:
+            # Otherwise, apply global position directly
+            obj.location = locations[i]
+        obj.keyframe_insert("location", frame=frames[i])
+        
+        # Insert rotation keyframes if rotations are defined
+        if rotations:             
+            if name == "tank":
+                # For 'tank', compose current rotation with incremental local rotation
+                local_rotation = mathutils.Euler(
+                    (rotations[i][0] * math.pi / 180, 
+                     rotations[i][1] * math.pi / 180, 
+                     rotations[i][2] * math.pi / 180)
+                )
+                # Combine current rotation with new local rotation
+                obj.rotation_euler = (obj.rotation_euler.to_matrix() @ local_rotation.to_matrix()).to_euler()
+            else:
+                # For other objects, set rotation Euler angles directly
+                obj.rotation_euler.x = rotations[i][0] * math.pi / 180
+                obj.rotation_euler.y = rotations[i][1] * math.pi / 180
+                obj.rotation_euler.z = rotations[i][2] * math.pi / 180
+            
+            # Insert rotation keyframe (Euler)
+            obj.keyframe_insert("rotation_euler", frame=frames[i])
+                
+    # Set scene frame to last animation frame
+    bpy.context.scene.frame_set(frames[-1])
+
+    # Return final location (Z only for 'elevate', full xyz otherwise)
+    if name == "elevate":
+        last_loc = obj.location.z
+    else:
+        last_loc = (obj.location.x,obj.location.y,obj.location.z)
+    return last_loc
+
+
+def set_ConstraintInfluence(object, type, setting, at_frame, interpolation = False):
+    # Access object and specific constraint by type
+    empty = bpy.data.objects[object]
+    constraint = empty.constraints[type]
+    
+    # If interpolation disabled, set influence to opposite value one frame before
+    if interpolation == False:
+        bpy.context.scene.frame_set(at_frame-1)
+        constraint.influence = not setting
+        constraint.keyframe_insert(data_path="influence")
+        
+    # Set influence to desired setting at specified frame and keyframe it
+    bpy.context.scene.frame_set(at_frame)
+    constraint.influence = setting
+    constraint.keyframe_insert(data_path="influence")
+    
+    # If disabling constraint influence, keyframe current world location to avoid snapping
+    if not setting:
+        loc = empty.matrix_world.translation
+        empty.location = loc
+        empty.keyframe_insert("location", frame=at_frame)
+        
+
+def set_view(objects, setting, at_frame):
+    # Set scene to specified frame before changing visibility states
+    bpy.context.scene.frame_set(at_frame)
+    for object in objects:
+        obj = bpy.data.objects[object]
+    
+        # Toggle viewport and render visibility based on setting (True = visible)
+        obj.hide_viewport, obj.hide_render = not setting, not setting
+        # Insert keyframes for visibility changes
+        obj.keyframe_insert(data_path="hide_viewport", frame=at_frame)
+        obj.keyframe_insert(data_path="hide_render", frame=at_frame)
+
+
+def get_LocalLocation(targetObj, base, frame):
+    # Set scene to desired frame for accurate evaluation
+    bpy.context.scene.frame_set(frame)
+    target = bpy.data.objects[targetObj]
+    # Get target's world position (translation)
+    target_world = target.matrix_world.to_translation()
+    robot_origo = bpy.data.objects[base]
+    # Calculate local coordinates of target relative to base by inverting base transform
+    target_local = robot_origo.matrix_world.inverted() @ target_world
+    return target_local
+
+
+def Gripper(setting, frames):
+    # Simple abstraction for gripper open/close animation using MOVE function
+    if setting == "open":
+        MOVE("griperEmpty",
+            [(0,0,0), (0,0,-0.4)],
+            [frames[0],frames[1]])
+    elif setting == "close":
+        MOVE("griperEmpty",
+            [(0,0,-0.4), (0,0,0)],
+            [frames[0],frames[1]])
+
+
+def ShelfArm(setting, frames):
+    # Abstraction to extend or fold the shelf arm using MOVE function
+    if setting == "extend":
+        MOVE("SkuffÅpner",
+            [(0,0,0), (2,0,2)],
+            [frames[0],frames[1]])
+    elif setting == "fold":
+        MOVE("SkuffÅpner",
+            [(2,0,2), (0,0,0)],
+            [frames[0],frames[1]])
+
+
+def hatch(setting, frames):
+    # Control hatch open/close rotation around X axis
+    loc = (0,0,0)
+    if setting == "open":
+        MOVE("hatch",
+            [loc, loc],
+            [frames[0],frames[1]],
+            [(0,0,0),(-80,0,0)])  # Rotate -80 degrees around X to open
+    elif setting == "close":
+        MOVE("hatch",
+            [loc, loc],
+            [frames[0],frames[1]],
+            [(-80,0,0),(0,0,0)])   # Rotate back to 0 degrees to close
+
+def progSetup(skuff, fs):
+    # Get the Blender object named 'skuff'
+    obj = bpy.data.objects.get(skuff)
+    
+    # Set visibility ON for the current skuff object
+    set_view([skuff], True, fs)
+    
+    # Set visibility OFF for a list of specific objects
+    set_view(["HEMMELIGSKUFF", "syl1_obj","syl2_obj","syl3_obj","syl4_obj","syl5_obj","syl6_obj",
+              "mainsyl", "pathsyl", "static1", "static2", "static3","static4","static5","static6",
+              "fallCyl", "fallCyl1","fallCyl2","fallCyl3","fallCyl4","fallCyl5"], False, fs)
+    
+    # Enable 'Copy Location' constraint influence on 'hemmeligSkuff_empty'
+    set_ConstraintInfluence("hemmeligSkuff_empty", "Copy Location", True, fs)
+    
+    # Call hatch function to close the hatch at frames [0,0]
+    hatch("close",[0,0])
+    
+def goTo(skuff, fs):
+    # Retrieve object corresponding to skuff
+    obj = bpy.data.objects.get(skuff)
+    
+    # Determine direction multiplier based on first character of skuff name
+    if skuff[0] == "A":
+        x = 1
+    else:
+        x = -1
+    
+    # Move 'tank' through a sequence of positions and rotations over given frames
+    tank_pos = MOVE("tank",
+        [(0,0,0), abs(obj.location.y-11.5), 0, abs(obj.location.x)-10],
+        [fs, fs+50, fs+60, fs+100],
+        [0, 0, x*90, 0])
+    
+    # Set frame end after move sequence
+    fe = fs + 100
+    
+    # Initialize elevate and arm positions
+    elevate_pos, arm_pos = 0, REST_POS
+    
+    # Pack last known positions and frame end into data tuple
+    last_locs = (tank_pos, elevate_pos, arm_pos)
+    data = (last_locs, fe)
+    return data
+
+def open(skuff, data):
+    # Retrieve object and frame start from data
+    obj = bpy.data.objects.get(skuff)
+    fs = data[1]
+    
+    # Unpack last known positions
+    tank_pos, elevate_pos, arm_pos = data[0][0], data[0][1], data[0][2]
+    
+    # Move 'elevate' up to position above the skuff over frames
+    elevate_pos = MOVE("elevate",
+        [0, obj.location.z + 4.45],
+        [fs, fs+50])
+    
+    # Get skuff's position relative to 'robot_base' at frame fs+50
+    skuff_local = get_LocalLocation(skuff, "robot_base", fs+50)
+    
+    # Calculate offsets for arm movement based on tool and shelf geometry
+    offset_z = abs(DrHandle_fromShelf[2]) + height_endeffector_to_DrGripper
+    offset_x = DrGripper_length + abs(DrHandle_fromShelf[1])
+    
+    # Move robotic arm end effector in three stages towards skuff
+    arm_pos = MOVE("ARM_END1",
+        [REST_POS, (0, skuff_local.y, skuff_local.z - offset_z + 0.5), 
+         (skuff_local.x - offset_x, skuff_local.y, skuff_local.z - offset_z + 0.5)],
+        [fs+50, fs+75, fs+100],
+        [REST_ROT, REST_ROT, SYL_ROT],
+        ik_rot=True)
+    
+    # Extend the shelf arm between frames fs+100 to fs+125
+    ShelfArm("extend", [fs+100, fs+125])
+    
+    # Further move the arm downward and forward over frames fs+125 to fs+200
+    arm_pos = MOVE("ARM_END1",
+        [arm_pos, (arm_pos[0], arm_pos[1], -0.53 + arm_pos[2]), (-10 + arm_pos[0], arm_pos[1], -0.53 + arm_pos[2])],
+        [fs+125, fs+150, fs+200],
+        ik_rot=True)
+    
+    # Adjust visibility of skuff and related objects at frame fs+150
+    set_view([skuff], False, fs+150)
+    set_view(["HEMMELIGSKUFF", "syl1_obj","syl2_obj","syl3_obj","syl4_obj","syl5_obj","syl6_obj"], True, fs+150)
+    
+    # Disable 'Copy Location' constraint influence on 'hemmeligSkuff_empty' at frame fs+200
+    set_ConstraintInfluence("hemmeligSkuff_empty", "Copy Location", False, fs+200)
+    
+    # Raise elevator further up over frames fs+200 to fs+225
+    elevate_pos = MOVE("elevate",
+        [elevate_pos, elevate_pos + 5],
+        [fs+200, fs+225])
+    
+    # Move 'tank' down to position -2 over frames fs+225 to fs+250
+    tank_pos = MOVE("tank",
+        [tank_pos, -2],
+        [fs+225, fs+250])
+    
+    # Move robotic arm through a series of positions in 3D space with inverse kinematics
+    arm_pos = MOVE("ARM_END1",
+        [arm_pos, (arm_pos[0], arm_pos[1], 2.5 + arm_pos[2]), (0, arm_pos[1], 2.5 + arm_pos[2]), (0, 2 + arm_pos[1], 2.5 + arm_pos[2])],
+        [fs+200, fs+225, fs+250, fs+275],
+        ik_rot=True)
+    
+    # Fold shelf arm between frames fs+200 to fs+225
+    ShelfArm("fold", [fs+200, fs+225])
+    
+    # Update frame end and return last positions
+    fe = fs + 275
+    last_locs = (tank_pos, elevate_pos, arm_pos)
+    data = (last_locs, fe)
+    return data
+    
+
+def load(skuff, data):
+    # Unpack last positions and frame start
+    tank_pluckpos, elevate_pluckpos, arm_pluckpos = data[0][0], data[0][1], data[0][2]
+    fs = data[1]
+    
+    # Initialize load position same as pluck position
+    tank_loadpos, tank_pos = tank_pluckpos, tank_pluckpos
+    
+    # Open and close gripper over specified frames to simulate grabbing
+    Gripper("open", [fs, fs+25])
+    Gripper("close", [fs+75, fs+100])
+    
+    # Get local position of first cylinder relative to robot base at frame fs
+    syl_local = get_LocalLocation(targetObj="syl1", base="robot_base", frame=fs)
+    
+    # Move robotic arm to pick up the cylinder using IK and rotation
+    arm_pos = MOVE("ARM_END1",
+        [arm_pluckpos, (syl_local.x, syl_local.y, arm_pluckpos[2]), (syl_local.x, syl_local.y, syl_local.z),
+         (syl_local.x, syl_local.y, syl_local.z), (syl_local.x, syl_local.y, arm_pluckpos[2]), arm_pluckpos],
+        [fs, fs+25, fs+75, fs+100, fs+150, fs+175],
+        [SYL_ROT, SYL_ROT, SYL_ROT, SYL_ROT, SYL_ROT, REST_ROT],
+        ik_rot=True)
+    
+    # Move arm to a standby position
+    arm_pos = MOVE("ARM_END1",
+        [arm_pos, (0, -2, arm_pos[2])],
+        [fs+175, fs+225],
+        ik_rot=True)
+    
+    arm_loadpos = arm_pos
+    
+    # Update visibility for cylinder objects
+    set_view(["syl1_obj"], False, fs+75)
+    set_view(["mainsyl"], True, fs+75)
+    
+    # Raise elevator to height 19 at frames fs+225 to fs+250
+    elevate_pos = MOVE("elevate",
+        [elevate_pluckpos, 19],
+        [fs+225, fs+250])
+    elevate_loadpos = elevate_pos
+    
+    # Get storage input position relative to robot base at frame fs+250
+    storage_local = get_LocalLocation(targetObj="storage_input", base="robot_base", frame=fs+250)
+    
+    # Move arm to storage input position
+    arm_pos = MOVE("ARM_END1",
+        [arm_pos, (0, storage_local.y, storage_local.z)],
+        [fs+250, fs+300],
+        ik_rot=True)
+    
+    # Update visibility of main and path cylinders
+    set_view(["mainsyl"], False, fs+300)
+    set_view(["pathsyl"], True, fs+300)
+    
+    # Open gripper to release cylinder
+    Gripper("open", [fs+300, fs+325])
+    
+    # Animate cylinder being deposited
+    animateCyl(1, [fs+325, fs+425])
+    
+    # Move arm back to load position
+    arm_pos = MOVE("ARM_END1",
+        [arm_pos, arm_loadpos],
+        [fs+300, fs+350],
+        ik_rot=True)
+    
+    # Lower elevator back to pluck position
+    elevate_pos = MOVE("elevate",
+        [elevate_pos, elevate_pluckpos],
+        [fs+350, fs+375])
+    
+    # Move arm back to pluck position with correct rotations
+    arm_pos = MOVE("ARM_END1",
+        [arm_pos, arm_pluckpos],
+        [fs+375, fs+425],
+        [REST_ROT, SYL_ROT],
+        ik_rot=True)
+    
+    # Quickly repeat the pick and place sequence for cylinders syl2 to syl6
+    cylinders = ["syl2", "syl3", "syl4", "syl5", "syl6"]
+    sim_start = fs + 425
+    step = 3
+    sim_length = step * 17
+    
+    i = 0
+    for object in cylinders:
+        # Get local location of cylinder at calculated simulation frame
+        syl_local = get_LocalLocation(targetObj=object, base="robot_base", frame=sim_start + sim_length*i)
+        
+        # Move arm to pick up the cylinder with IK and rotations
+        arm_pos = MOVE("ARM_END1",
+            [arm_pos,
+             (syl_local.x, syl_local.y, arm_pluckpos[2]),
+             (syl_local.x, syl_local.y, syl_local.z),
+             (syl_local.x, syl_local.y, syl_local.z),
+             (syl_local.x, syl_local.y, arm_pluckpos[2]),
+             arm_pluckpos],
+            [sim_start + sim_length*i,
+             sim_start + sim_length*i + step,
+             sim_start + sim_length*i + step*3,
+             sim_start + sim_length*i + step*4,
+             sim_start + sim_length*i + step*6,
+             sim_start + sim_length*i + step*7],
+            [SYL_ROT, SYL_ROT, SYL_ROT, SYL_ROT, SYL_ROT, REST_ROT],
+            ik_rot=True)
+        
+        # Close gripper to grasp cylinder and update visibility
+        Gripper("close", [sim_start + sim_length*i + step*3, sim_start + sim_length*i + step*4])
+        set_view([object + "_obj"], False, sim_start + sim_length*i + step*3)
+        set_view(["mainsyl"], True, sim_start + sim_length*i + step*3)
+        
+        # Move arm back to load position
+        arm_pos = MOVE("ARM_END1",
+            [arm_pos, arm_loadpos],
+            [sim_start + sim_length*i + step*7, sim_start + sim_length*i + step*9],
+            ik_rot=True)
+        
+        # Move elevator back to load position
+        elevate_pos = MOVE("elevate",
+            [elevate_pos, elevate_loadpos],
+            [sim_start + sim_length*i + step*9, sim_start + sim_length*i + step*10])
+        
+        # Move arm to storage input position
+        storage_local = get_LocalLocation(targetObj="storage_input", base="robot_base", frame=sim_start + sim_length*i + step*10)
+        arm_pos = MOVE("ARM_END1",
+            [arm_pos, (0, storage_local.y, storage_local.z)],
+            [sim_start + sim_length*i + step*10, sim_start + sim_length*i + step*12],
+            ik_rot=True)
+        
+        # Update visibility for main and path cylinders
+        set_view(["mainsyl"], False, sim_start + sim_length*i + step*12)
+        set_view(["pathsyl"], True, sim_start + sim_length*i + step*12)
+        
+        # Open gripper to release cylinder
+        Gripper("open", [sim_start + sim_length*i + step*12, sim_start + sim_length*i + step*13])
+        
+        # Animate cylinder deposit
+        animateCyl(i + 2, [sim_start + sim_length*i + step*13, sim_start + sim_length*i + step*17])
+        
+        # Move arm back to load position
+        arm_pos = MOVE("ARM_END1",
+            [arm_pos, arm_loadpos],
+            [sim_start + sim_length*i + step*12, sim_start + sim_length*i + step*14],
+            ik_rot=True)
+        
+        # Move elevator back to pluck position
+        elevate_pos = MOVE("elevate",
+            [elevate_pos, elevate_pluckpos],
+            [sim_start + sim_length*i + step*14, sim_start + sim_length*i + step*15])
+        
+        # Return arm to pluck position with appropriate rotations
+        arm_pos = MOVE("ARM_END1",
+            [arm_pos, arm_pluckpos],
+            [sim_start + sim_length*i + step*15, sim_start + sim_length*i + step*17],
+            [REST_ROT, SYL_ROT],
+            ik_rot=True)
+        
+        # When processing last cylinder, close gripper and return final data
+        if i == 4:
+            Gripper("close", [sim_start + sim_length*i + step*16, sim_start + sim_length*i + step*17])
+            last_locs = (tank_pos, elevate_pos, arm_pos)
+            fe = sim_start + sim_length*i + step*17
+            data = (last_locs, fe)
+            return data
+        i += 1
+
+def close(skuff, data):  # Requires 350 frames for the closing sequence
+    obj = bpy.data.objects.get(skuff)
+    fs = data[1]  # Frame start time
+    tank_pos, elevate_pos, arm_pos = data[0][0], data[0][1], data[0][2]
+    
+    # Move "tank" object from current tank_pos to a position offset by 2 on Y-axis over frames [fs, fs+50]
+    tank_pos = MOVE("tank",
+        [tank_pos, 2],
+        [fs, fs+50])
+    
+    # Get local coordinates of "hemmeligSkuff_empty" relative to "robot_base" at frame fs+50
+    skuff_local = get_LocalLocation("hemmeligSkuff_empty", "robot_base", fs+50)
+    
+    # Define offsets based on end-effector geometry and gripper length with slight adjustments
+    offset_z = height_endeffector_to_DrGripper - 0.0035
+    offset_x = DrGripper_length - 0.0335
+    
+    # Move the robotic arm ("ARM_END1") through a 3-step path with inverse kinematics rotation enabled
+    arm_pos = MOVE("ARM_END1",
+        [arm_pos, (arm_pos[0], arm_pos[1]-2, arm_pos[2]), (skuff_local.x - offset_x, arm_pos[1]-2, arm_pos[2])],
+        [fs, fs+50, fs+100],
+        ik_rot=True)
+    
+    # Move "elevate" actuator up by 4.45 units over frames [fs+100, fs+150]
+    elevate_pos = MOVE("elevate",
+        [elevate_pos, obj.location.z + 4.45],
+        [fs+100, fs+150])
+    
+    # Update skuff_local position at new frame fs+150
+    skuff_local = get_LocalLocation("hemmeligSkuff_empty", "robot_base", fs+150)
+    
+    # Move arm to position with adjusted z-offset and IK rotation
+    arm_pos = MOVE("ARM_END1",
+        [arm_pos, (arm_pos[0], arm_pos[1], skuff_local.z - offset_z)],
+        [fs+150, fs+200],
+        ik_rot=True)
+    
+    # Extend the shelf arm mechanism between frames fs+150 and fs+175
+    ShelfArm("extend", [fs+150, fs+175])
+    
+    # Translate arm on X-axis by +10 units with IK rotation over frames [fs+200, fs+250]
+    arm_pos = MOVE("ARM_END1",
+        [arm_pos, (10 + arm_pos[0], arm_pos[1], arm_pos[2])],
+        [fs+200, fs+250],
+        ik_rot=True)
+    
+    # Set the viewport to focus on the skuff object and enable view at frame fs+250
+    set_view([skuff], True, fs+250)
+    
+    # Disable view for listed objects at frame fs+250
+    set_view(["HEMMELIGSKUFF", "syl1_obj", "syl2_obj", "syl3_obj", "syl4_obj", "syl5_obj", "syl6_obj"], False, fs+250)
+    
+    # Enable "Copy Location" constraint influence on "hemmeligSkuff_empty" at frame fs+200
+    set_ConstraintInfluence("hemmeligSkuff_empty", "Copy Location", True, fs+200)
+    
+    # Retract arm with complex multi-step movement including rotation interpolation over frames fs+250 to fs+325
+    arm_pos = MOVE("ARM_END1",
+        [arm_pos, (arm_pos[0], arm_pos[1], 2 + arm_pos[2]), (REST_POS[0], arm_pos[1], 2 + arm_pos[2]), REST_POS],
+        [fs+250, fs+275, fs+300, fs+325],
+        [SYL_ROT, SYL_ROT, REST_ROT, REST_ROT],
+        ik_rot=True)
+    
+    # Fold the shelf arm mechanism between frames fs+275 and fs+300
+    ShelfArm("fold", [fs+275, fs+300])
+    
+    # Lower the elevate actuator back to zero position over frames [fs+275, fs+325]
+    elevate_pos = MOVE("elevate",
+        [elevate_pos, 0],
+        [fs+275, fs+325])
+    
+    # Update end frame and return new positions and frame count
+    fe = fs + 325
+    last_locs = (tank_pos, elevate_pos, arm_pos)
+    data = (last_locs, fe)
+    return data
+
+def goHome(skuff, data):
+    obj = bpy.data.objects.get(skuff)
+    fs = data[1]
+    tank_pos, elevate_pos, arm_pos = data[0][0], data[0][1], data[0][2]
+    
+    # Determine direction sign based on skuff name starting character
+    if skuff[0] == "A":
+        x = 1
+    else:
+        x = -1
+    
+    # Move tank through a sequence of precise intermediate positions and rotations towards skuff location
+    tank_pos = MOVE("tank",
+        [tank_pos, -abs(obj.location.x) + 10, 0, 0, abs(obj.location.y - 19)],
+        [fs, fs+50, fs+60, fs+61, fs+99],
+        [x*90, 0, x*89, x*1, 0])
+    
+    # Reset tank position and rotation to origin in a final quick step
+    tank_pos = MOVE("tank",
+        [(0, 0, 0), 0],
+        [fs+99, fs+100])
+        
+    fe = fs + 100
+    last_locs = (tank_pos, elevate_pos, arm_pos)
+    data = (last_locs, fe)
+    return data
+
+
+def offLoad(data):
+    fs = data[1]
+    tank_pos, elevate_pos, arm_pos = data[0][0], data[0][1], data[0][2]
+    
+    # Move tank from origin to position 5 on Y-axis over 10 frames
+    tank_pos = MOVE("tank",
+        [(0, 0, 0), 5],
+        [fs, fs+10])
+        
+    # Open hatch between frames fs+10 and fs+20
+    hatch("open", [fs+10, fs+20])
+    
+    # Animate cylinder drop sequence over 30 frames starting at fs+10
+    aniDropCyl([fs+10, fs+40])
+    
+    # Close hatch between frames fs+40 and fs+50
+    hatch("close", [fs+40, fs+50])
+
+
+def aniDropCyl(frames):
+    obj = bpy.data.objects.get("fallCyl")
+    constraint = obj.constraints.get("Follow Path")
+
+    # Define key frame points within the given frame range for animation scheduling
+    A = frames[0]
+    B = frames[0] + round(0.25 * (frames[1] - frames[0]))
+    C = frames[0] + round(0.4 * (frames[1] - frames[0]))
+    D = frames[0] + round(0.6 * (frames[1] - frames[0]))
+    E = frames[1]
+    
+    # First schedule for offset animation at specified frames
+    schedule1 = {
+        A: 0,
+        B: -28,
+        C: -55,
+        D: -100,
+    }
+    
+    # Second schedule for offset animation with different timing and values
+    schedule2 = {
+        B: 0,
+        C: -10,
+        D: -70,
+        E: -100,
+    }
+    
+    # Starting offset positions for multiple objects (fallCyl1 to fallCyl5)
+    starting_points = {
+        1: 0,
+        2: -10.700,
+        3: -21.400,
+        4: -32.200,
+        5: -42.900,
+    }
+
+    # Show the main object at the first key frame of schedule1
+    bpy.context.scene.frame_set(min(schedule1.keys()))
+    set_view(["static6"], False, min(schedule1.keys()))  # Hide static6 object at this frame
+    set_view(["fallCyl"], True, min(schedule1.keys()))  # Show fallCyl object at this frame
+
+    # Animate the constraint offset using schedule1 keyframes
+    for frame, offset in schedule1.items():
+        bpy.context.scene.frame_set(frame)
+        constraint.offset = offset
+        constraint.keyframe_insert(data_path="offset", frame=frame)
+
+    # Hide the main object after the last keyframe of schedule1
+    bpy.context.scene.frame_set(max(schedule1.keys()))
+    set_view(["fallCyl"], False, max(schedule1.keys()))
+    
+    # Prepare to animate multiple objects in schedule2
+    bpy.context.scene.frame_set(min(schedule2.keys()))
+    for i in range(5):
+        cyl = "fallCyl" + str(i+1)
+        obj = bpy.data.objects.get(cyl)
+        print(obj)  # Debug print to verify object retrieval
+        constraint = obj.constraints.get("Follow Path")
+        
+        # Hide corresponding static object and show animated cylinder at first frame of schedule2
+        set_view(["static"+str(i+1)], False, min(schedule2.keys()))
+        set_view([cyl], True, min(schedule2.keys()))
+        
+        # Animate constraint offsets with starting points and schedule2 offsets
+        for frame, offset in schedule2.items():
+            bpy.context.scene.frame_set(frame)
+            constraint.offset = starting_points[i+1] + offset
+            constraint.keyframe_insert(data_path="offset", frame=frame)
+
+        # Hide the animated cylinder after the last keyframe of schedule2
+        bpy.context.scene.frame_set(max(schedule2.keys()))
+        set_view([cyl], False, max(schedule2.keys()))
+
+def animateCyl(spot, frames):
+    obj = bpy.data.objects.get("pathsyl")
+    constraint = obj.constraints.get("Follow Path")
+    
+    # Initialize animation start frame with offset zero
+    bpy.context.scene.frame_set(frames[0])
+    constraint.offset = 0
+    constraint.keyframe_insert(data_path="offset", frame=frames[0])
+    
+    # Mapping of spot to offset values for animation end position
+    offset_values = {
+        1: -100,
+        2: -80,
+        3: -60,
+        4: -40,
+        5: -20,
+        6: 0
+    }
+    
+    # Set final offset and insert keyframe at end frame
+    bpy.context.scene.frame_set(frames[1])
+    constraint.offset = offset_values[spot]
+    constraint.keyframe_insert(data_path="offset", frame=frames[1])
+    
+    # Hide the path object and show the corresponding static object at animation end frame
+    set_view(["pathsyl"], False, frames[1])
+    set_view(["static" + str(spot)], True, frames[1])
+
+
+def CAPTURE(skuff):
+    # Define fixed camera positions and rotations for various predefined views
+    originview_pos = (-0.99795, -34.8008, 30.9565)
+    originview_rot = (62.4012, 0, 358.4)
+
+    hall_pos = (11.7071, 69.468, 23.5595)
+    hall_rot = (78.8001, 0, 163.6)
+       
+    overviewsideopen_pos = (-50.0831, 29.1371, 16.4395 - 4.05)
+    overviewsideopen_rot = (68.4002, 0, 279.6)
+
+    closeopen_pos = (-37.6531, 37.8433, 10.0119 - 4.05)
+    closeopen_rot = (68.0002, 0, 280)
+
+    overviewpluck_pos = (-56.7077, 24.777, 24.0366 - 4.05)
+    overviewpluck_rot = (66.8003, 0, 284.4)
+
+    overviewpluck2_pos = (-43.8299, 18.9452, 34.0483 - 4.05)
+    overviewpluck2_rot = (47.2004, 0, 307.2)
+
+    overviewfront_pos = (-26.2652, 2.74327, 17.9921 - 4.05)
+    overviewfront_rot = (75.2006, 0, 354)
+
+    overviewfront2_pos = (-38.6677, 17.1281, 18.7753 - 4.05)
+    overviewfront2_rot = (75.2008, 0, 322.8)
+
+    midcloseclose_pos = (-44.2921, 22.7821, 12.2442 - 4.05)
+    midcloseclose_rot = (76.0007, 0, 304.8)
+
+    sideview_pos = (-48.3544, 29.9242, 9.25798 - 4.05)
+    sideview_rot = (89.2009, 0, 274)
+    
+    sideview2_pos = (-45.9259, 32.6584, 20.1527)
+    sideview2_rot = (74.3763, 0, 271.207)
+    
+    birdview_pos = (-47.1897, -4.90912, 49.0215)
+    birdview_rot = (57.201, 0, 290.4)
+
+    offloadview_pos = (-24.9169, -24.0287, 13.1365)
+    offloadview_rot = (76.4011, 0, 298.4)
+    
+    topsidedrawer_pos = (-45.3637, 31.9504, 34.2231 - 3 * 4.05)
+    topsidedrawer_rot = (49.9762, 0, 274.407)
+    
+    topdraweroverview_pos = (-40.8103, 17.7623, 40.498)
+    topdraweroverview_rot = (54.0006, 0, 317.6)
+    
+    fronttopoverview_pos = (-27.0605, 13.1639, 43.0167)
+    fronttopoverview_rot = (48.4006, 0, 350)
+    
+    forcepoint_pos = (-41.4592, 28.2581, 36.2564)
+    forcepoint_rot = (62.0006, 0, 286)
+    
+    backtop2_pos = (-38.0272, 47.0361, 38.569)
+    backtop2_rot = (56.0006, 0, 216)
+    
+    backtop_pos = (-24.215, 45.0062, 42.4366)
+    backtop_rot = (40.4008, 0, 149.6)
+    
+    sideview3_pos = (-47.3197, 29.8873, 25.5865)  
+    sideview3_rot = (90.4007, 0, 272.4)
+    
+    groundview_pos = (-44.4788, 21.7473, 13.7618)
+    groundview_rot = (77.2008, 0, 296)
+    
+    # Extract the Z-index from the input string 'skuff' (assumes a specific format: ADr123 for instance)
+    z_val = int(skuff[5])
+    # Calculate vertical offset correction based on drawer index
+    z_corr = z_val * 4.05
+    
+    # List of positions which require vertical offset adjustment
+    variable_positions = [
+        overviewsideopen_pos, closeopen_pos, overviewpluck_pos, overviewpluck2_pos, 
+        overviewfront_pos, overviewfront2_pos, midcloseclose_pos, sideview_pos, topsidedrawer_pos
+    ]
+    
+    # Apply vertical correction to all these positions
+    for i in range(len(variable_positions)):
+        x, y, z = variable_positions[i]
+        variable_positions[i] = (x, y, z + z_corr)
+    
+    # Update the variables with the adjusted positions
+    (overviewsideopen_pos, closeopen_pos, overviewpluck_pos, overviewpluck2_pos, 
+     overviewfront_pos, overviewfront2_pos, midcloseclose_pos, sideview_pos, topsidedrawer_pos) = variable_positions
+    
+    # Define a schedule mapping letter keys to camera positions and rotations
+    schedule = {
+        "A": {"loc": topdraweroverview_pos, "rot": topdraweroverview_rot},
+        "B": {"loc": fronttopoverview_pos,  "rot": fronttopoverview_rot},
+        "C": {"loc": forcepoint_pos,        "rot": forcepoint_rot},
+        "D": {"loc": backtop2_pos,          "rot": backtop2_rot},
+        "E": {"loc": backtop_pos,           "rot": backtop_rot},
+        "F": {"loc": sideview3_pos,         "rot": sideview3_rot},
+        "G": {"loc": groundview_pos,        "rot": groundview_rot},
+        "H": {"loc": overviewpluck_pos,     "rot": overviewpluck_rot},
+        "I": {"loc": overviewfront_pos,     "rot": overviewfront_rot},
+        "J": {"loc": overviewfront2_pos,    "rot": overviewfront2_rot},
+        "K": {"loc": midcloseclose_pos,     "rot": midcloseclose_rot},
+        "L": {"loc": offloadview_pos,       "rot": offloadview_rot},
+    }
+    
+    # Move the camera smoothly through a sequence of positions and rotations over specified frame ranges
+    cam_pos = MOVE("CAM",
+        [schedule["A"]["loc"], schedule["B"]["loc"]],
+        [350, 400],
+        [schedule["A"]["rot"], schedule["B"]["rot"]])
+    cam_pos = MOVE("CAM",
+        [schedule["B"]["loc"], schedule["C"]["loc"]],
+        [800, 825],
+        [schedule["B"]["rot"], schedule["C"]["rot"]])
+    cam_pos = MOVE("CAM",
+        [schedule["C"]["loc"], schedule["D"]["loc"]],
+        [825, 850],
+        [schedule["C"]["rot"], schedule["D"]["rot"]])
+    cam_pos = MOVE("CAM",
+        [schedule["D"]["loc"], schedule["E"]["loc"]],
+        [850, 900],
+        [schedule["D"]["rot"], schedule["E"]["rot"]])
+    cam_pos = MOVE("CAM",
+        [schedule["E"]["loc"], schedule["F"]["loc"]],
+        [1020, 1070],
+        [schedule["E"]["rot"], schedule["F"]["rot"]])
+    cam_pos = MOVE("CAM",
+        [schedule["F"]["loc"], schedule["G"]["loc"]],
+        [1330, 1365],
+        [schedule["F"]["rot"], schedule["G"]["rot"]])
+    
+    # Prepare a list of drawer objects to hide initially (frame 0)
+    hidelist = []
+    for x in range(4):
+        for z in range(6):
+            drawer = "ADr" + str(x) + "0" + str(z)
+            hidelist.append(drawer)
+    # Also add a specific rack object to the hide list
+    hidelist.append("ARACK0")
+    
+    # sets visibility to true on all listed objects immediately (frame 0)
+    set_view(hidelist, True, 0)
+    
+    # For toggling visibility at frames 565 and 1445, currently inactive:
+    # set_view(hidelist, False, 565)
+    # set_view(hidelist, True, 1445)
+
+
+
+
+
+# SCALE IS 1 : 0.1
+# The entire coordinate system and dimensions are scaled down by a factor of 10 (decimetres instead of meters).
+
+# PROGRAM
+print()
+print("PROGRAM: ")
+
+# The following drawer creation commands only need to be run once to generate drawer structures.
+# They are commented out here to avoid duplication on subsequent runs.
+#create_drawers(struct_dim=(4,4,6), box_dim=(70.8/10, 100/10, 23/10),
+#               spacing=(0, 200/10, 9.5/10), start_loc=(-500/10, 150/10, (50/10)-0.75),
+#               Wthickness=(1/10,1/10,1/10), Pthickness=(9/10,4.5/10,10/10), Pspacing=(4/10,7.5/10),
+#               section="A")
+#create_drawers(struct_dim=(4,4,6), box_dim=(70.8/10, 100/10, 23/10),
+#               spacing=(0, 200/10, 9.5/10), start_loc=(200/10, 150/10, (50/10)-0.75),
+#               Wthickness=(1/10,1/10,1/10), Pthickness=(9/10,4.5/10,10/10), Pspacing=(4/10,7.5/10),
+#               section="B")
+
+# Unhide specified objects at frame 0 if wanted
+#set_view(["HEMMELIGSKUFF", "syl1_obj","syl2_obj","syl3_obj","syl4_obj","syl5_obj","syl6_obj"], True, 0)
+
+# Constants defining standard rest positions and rotations for the robotic components.
+REST_POS, REST_ROT = (0,7,-3), (-90,0,-180)
+SYL_ROT = (REST_ROT[0], REST_ROT[1], REST_ROT[2]-90)  # Adjusted rotation for cylinder orientation
+
+# Relative position vector from drawer origin to drawer handle (small offset).
+DrHandle_fromShelf = (-0.000012, -5.22, -0.250008)  # Coordinates relative to drawer origin
+
+# Length parameters for gripper and end effector heights in the system.
+DrGripper_length = 2.42652
+height_endeffector_to_DrGripper = 4.07323
+
+# Remove any old keyframes or commands in the animation timeline within frames -100 to 5000.
+delKeyframes("all", [-100, 5000])
+
+# Start animation sequence by unhiding a specific drawer object at frame 0.
+set_view(["ADr215"], True, 0)  # Ensures drawer "ADr215" is visible (workaround for display glitch)
+
+# Set target drawer identifier.
+skuff = "ADr215"
+
+# Initialize program setup for the specified drawer at frame 0.
+progSetup(skuff, fs=0)
+
+# Execute a sequence of motions with frame start times printed for traceability.
+print("goTo() framestart: ", 0)
+data = goTo(skuff, fs=0)
+
+print("open() framestart: ", data[1])
+data = open(skuff, data)
+
+print("load() framestart: ", data[1])
+data = load(skuff, data)
+
+print("close() framestart: ", data[1])
+data = close(skuff, data)
+
+print("goHome() framestart: ", data[1])
+data = goHome(skuff, data)
+
+print("offLoad() framestart: ", data[1])
+offLoad(data)
+
+# Moves camera for later rendering and video production
+CAPTURE(skuff)
+
+print()
